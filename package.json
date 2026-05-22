@@ -1,0 +1,9 @@
+{
+  "name": "alpaca-trading-bot",
+  "version": "1.0.0",
+  "description": "Paper trading bot using Alpaca API, triggered via OpenClaw cron",
+  "type": "module",
+  "dependencies": {
+    "@alpacahq/alpaca-trade-api": "^3.1.3"
+  }
+}

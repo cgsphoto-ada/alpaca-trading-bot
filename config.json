@@ -1,0 +1,8 @@
+{
+  "watchlist": ["SPY", "QQQ", "IWM"],
+  "positionSize": 5000,
+  "smaShort": 50,
+  "smaLong": 200,
+  "orderType": "market",
+  "timeInForce": "day"
+}
