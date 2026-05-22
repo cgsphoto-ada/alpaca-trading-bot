@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 /**
- * Alpaca Paper Trading Bot — SMA Crossover Strategy
+ * Alpaca Paper Trading Bot — SMA Trend-Following Strategy
+ *
+ * On every run, aligns positions with the SMA trend:
+ *   SMA_short > SMA_long → be LONG  (buy if not holding)
+ *   SMA_short < SMA_long → be FLAT  (sell if holding)
  *
  * Uses Yahoo Finance for historical price data (free, unlimited history).
  * Uses Alpaca for account info, positions, and order execution (paper).
@@ -31,9 +35,10 @@ function loadConfig() {
   }
   return {
     watchlist: cfg.watchlist || ["SPY", "QQQ", "IWM"],
-    smaShort: cfg.smaShort || 50,
-    smaLong: cfg.smaLong || 200,
+    smaShort: cfg.smaShort || 20,
+    smaLong: cfg.smaLong || 50,
     positionSize: cfg.positionSize || 5000,
+    maxBudget: cfg.maxBudget || 80000,
     orderType: cfg.orderType || "market",
     timeInForce: cfg.timeInForce || "day",
     limitPrice: cfg.limitPrice,
@@ -46,6 +51,7 @@ const WATCHLIST = CONFIG.watchlist;
 const SMA_SHORT = CONFIG.smaShort;
 const SMA_LONG = CONFIG.smaLong;
 const POSITION_SIZE = CONFIG.positionSize;
+const MAX_BUDGET = CONFIG.maxBudget;
 const ORDER_TYPE = CONFIG.orderType;
 const TIME_IN_FORCE = CONFIG.timeInForce;
 
@@ -147,9 +153,17 @@ async function fetchYahooBarsWithRetry(symbol, retries = 3) {
       return await fetchYahooBars(symbol);
     } catch (e) {
       if (i === retries - 1) throw e;
-      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
     }
   }
+}
+
+function buildOrderParams(symbol, qty, side) {
+  const params = { symbol, qty, side, type: ORDER_TYPE, time_in_force: TIME_IN_FORCE };
+  if (ORDER_TYPE !== "market") params.limit_price = CONFIG.limitPrice;
+  if (["stop", "stop_limit"].includes(ORDER_TYPE))
+    params.stop_price = CONFIG.stopPrice;
+  return params;
 }
 
 // ── Main ──────────────────────────────────────────────────
@@ -183,7 +197,9 @@ async function main() {
   try {
     account = await alpaca.getAccount();
     positions = await alpaca.getPositions();
-    log(`Account: $${Number(account.cash).toFixed(0)} cash | $${Number(account.portfolio_value).toFixed(0)} portfolio | ${Number(account.buying_power).toFixed(0)} bp`);
+    const cash = Number(account.cash);
+    const pv = Number(account.portfolio_value);
+    log(`Account: $${cash.toFixed(0)} cash | $${pv.toFixed(0)} portfolio | ${Number(account.buying_power).toFixed(0)} bp`);
   } catch (e) {
     log(`ERROR account: ${e.message}`);
     return;
@@ -197,14 +213,15 @@ async function main() {
 
   const state = loadState();
   let stateChanged = false;
+  let tradesExecuted = 0;
+  let cashSpent = 0;
 
   for (const symbol of WATCHLIST) {
-    if (!state[symbol]) { state[symbol] = { crossover: "none" }; stateChanged = true; }
+    if (!state[symbol]) { state[symbol] = { holding: false }; stateChanged = true; }
 
     try {
-      log(`${symbol}: Fetching Yahoo data...`);
       const bars = await fetchYahooBarsWithRetry(symbol);
-      const prices = bars.map(b => b.c);
+      const prices = bars.map((b) => b.c);
 
       if (prices.length < SMA_LONG) {
         log(`${symbol}: Only ${prices.length} bars, need ${SMA_LONG}. Skipping.`);
@@ -213,88 +230,74 @@ async function main() {
 
       const shortNow = sma(prices, SMA_SHORT);
       const longNow = sma(prices, SMA_LONG);
-      // Previous day's SMAs to detect crossover
-      const shortPrev = sma(prices.slice(0, -1), SMA_SHORT);
-      const longPrev = sma(prices.slice(0, -1), SMA_LONG);
       const lastPrice = prices[prices.length - 1];
       const lastDate = new Date(bars[bars.length - 1].t * 1000).toISOString().split("T")[0];
 
-      if (shortNow == null || longNow == null || shortPrev == null || longPrev == null) {
+      if (shortNow == null || longNow == null) {
         log(`${symbol}: SMA null — skip`);
         continue;
       }
 
-      log(`${symbol}: ${lastDate} | $${lastPrice.toFixed(2)} | SMA${SMA_SHORT}=${shortNow.toFixed(2)} | SMA${SMA_LONG}=${longNow.toFixed(2)} | State: ${state[symbol].crossover}`);
+      const bullish = shortNow > longNow;
+      const spread = ((shortNow - longNow) / longNow * 100);
+      const trendLabel = bullish ? "BULL" : "BEAR";
 
-      // First run: set initial state based on current trend
-      if (state[symbol].crossover === "none") {
-        state[symbol].crossover = shortNow > longNow ? "golden" : "death";
-        stateChanged = true;
-        log(`${symbol}: Init state → "${state[symbol].crossover}" (SMA${SMA_SHORT} ${shortNow > longNow ? ">" : "<"} SMA${SMA_LONG})`);
-        continue;
-      }
+      const existing = positions.find((p) => p.symbol === symbol);
+      const isHolding = !!existing;
 
-      // Golden cross: short SMA crosses ABOVE long SMA
-      if (shortPrev <= longPrev && shortNow > longNow) {
-        if (state[symbol].crossover !== "golden") {
-          log(`${symbol}: \x1b[33m🔼 GOLDEN CROSS\x1b[0m`);
-          const existing = positions.find(p => p.symbol === symbol);
-          if (existing) {
-            log(`${symbol}: Already holding ${existing.qty} shares, skipping`);
-          } else {
-            const qty = Math.max(1, Math.floor(POSITION_SIZE / lastPrice));
-            try {
-              const orderParams = {
-                symbol,
-                qty,
-                side: "buy",
-                type: ORDER_TYPE,
-                time_in_force: TIME_IN_FORCE,
-              };
-              if (ORDER_TYPE !== "market") orderParams.limit_price = CONFIG.limitPrice;
-              if (["stop", "stop_limit"].includes(ORDER_TYPE))
-                orderParams.stop_price = CONFIG.stopPrice;
-              const order = await alpaca.createOrder(orderParams);
-              log(`${symbol}: ✅ BUY ${qty} @ ~$${lastPrice.toFixed(2)} | ${order.id}`);
-            } catch (e) {
-              log(`${symbol}: ❌ BUY failed: ${e.message}`);
-            }
-          }
-          state[symbol].crossover = "golden";
+      log(
+        `${symbol}: ${lastDate} | $${lastPrice.toFixed(2)} | ` +
+        `SMA${SMA_SHORT}=${shortNow.toFixed(2)} SMA${SMA_LONG}=${longNow.toFixed(2)} ` +
+        `(${spread >= 0 ? "+" : ""}${spread.toFixed(1)}%) ${trendLabel} | ` +
+        `Holding: ${isHolding ? existing.qty + " sh" : "none"}`
+      );
+
+      // BUY: we're in a bullish trend but don't hold this symbol
+      if (bullish && !isHolding) {
+        // Budget check
+        if (cashSpent + POSITION_SIZE > MAX_BUDGET) {
+          log(`${symbol}: Budget limit reached (spent $${cashSpent}/${MAX_BUDGET}), skipping`);
+          continue;
+        }
+
+        const qty = Math.max(1, Math.floor(POSITION_SIZE / lastPrice));
+        try {
+          const order = await alpaca.createOrder(buildOrderParams(symbol, qty, "buy"));
+          log(`${symbol}: ✅ BUY ${qty} @ ~$${lastPrice.toFixed(2)} | ${order.id}`);
+          state[symbol].holding = true;
           stateChanged = true;
+          tradesExecuted++;
+          cashSpent += POSITION_SIZE;
+        } catch (e) {
+          log(`${symbol}: ❌ BUY failed: ${e.message}`);
         }
       }
 
-      // Death cross: short SMA crosses BELOW long SMA
-      if (shortPrev >= longPrev && shortNow < longNow) {
-        if (state[symbol].crossover !== "death") {
-          log(`${symbol}: \x1b[31m🔽 DEATH CROSS\x1b[0m`);
-          const existing = positions.find(p => p.symbol === symbol);
-          if (existing) {
-            try {
-              await alpaca.closePosition(symbol);
-              log(`${symbol}: ✅ SOLD ${existing.qty} shares (closed position)`);
-            } catch (e) {
-              log(`${symbol}: ❌ SELL failed: ${e.message}`);
-            }
-          } else {
-            log(`${symbol}: No position, nothing to sell`);
-          }
-          state[symbol].crossover = "death";
+      // SELL: we're in a bearish trend but still holding this symbol
+      if (!bullish && isHolding) {
+        try {
+          await alpaca.closePosition(symbol);
+          log(`${symbol}: ✅ SOLD ${existing.qty} shares (closed position)`);
+          state[symbol].holding = false;
           stateChanged = true;
+          tradesExecuted++;
+        } catch (e) {
+          log(`${symbol}: ❌ SELL failed: ${e.message}`);
         }
       }
-
     } catch (e) {
       log(`${symbol}: ERROR — ${e.message}`);
     }
   }
 
   if (stateChanged) saveState(state);
-  log("Run complete.");
+  const summary = tradesExecuted > 0
+    ? `Run complete — ${tradesExecuted} trade(s) executed.`
+    : `Run complete — no changes.`;
+  log(summary);
 }
 
-main().catch(e => {
+main().catch((e) => {
   log(`FATAL: ${e.message}`);
   process.exit(1);
 });

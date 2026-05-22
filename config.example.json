@@ -1,8 +1,13 @@
 {
-  "watchlist": ["SPY", "QQQ", "IWM"],
+  "watchlist": [
+    "SPY", "QQQ", "IWM",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META",
+    "NVDA", "TSLA", "AMD", "NFLX", "ADBE"
+  ],
   "positionSize": 5000,
-  "smaShort": 50,
-  "smaLong": 200,
+  "maxBudget": 80000,
+  "smaShort": 20,
+  "smaLong": 50,
   "orderType": "market",
   "timeInForce": "day"
 }

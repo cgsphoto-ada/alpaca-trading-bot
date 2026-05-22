@@ -4,10 +4,10 @@ Paper trading bot using the [Alpaca Markets API](https://alpaca.markets) for ord
 
 ## Strategy
 
-**SMA Crossover** — short / long simple moving average crossover on a configurable watchlist.
+**SMA Trend Following** — on every run, aligns positions with the moving average trend:
 
-- **Golden Cross** (short SMA crosses *above* long SMA) → Buy
-- **Death Cross** (short SMA crosses *below* long SMA) → Sell
+- **SMA_short > SMA_long** → bullish trend → **buy** if not holding
+- **SMA_short < SMA_long** → bearish trend → **sell** if holding
 
 Runs every 30 minutes during market hours (M-F, 9:30 AM – 4:00 PM ET) via cron.
 
@@ -17,10 +17,11 @@ Edit `config.json` to customize:
 
 ```json
 {
-  "watchlist": ["SPY", "QQQ", "IWM"],
+  "watchlist": ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "NFLX", "ADBE"],
   "positionSize": 5000,
-  "smaShort": 50,
-  "smaLong": 200,
+  "maxBudget": 80000,
+  "smaShort": 20,
+  "smaLong": 50,
   "orderType": "market",
   "timeInForce": "day"
 }
@@ -30,6 +31,7 @@ Edit `config.json` to customize:
 |-------|-------------|
 | `watchlist` | Symbols to trade |
 | `positionSize` | Dollar amount per trade |
+| `maxBudget` | Maximum total dollars to allocate per run |
 | `smaShort` / `smaLong` | Moving average periods |
 | `orderType` | `market`, `limit`, `stop`, or `stop_limit` |
 | `timeInForce` | `day`, `gtc`, or `ioc` |
@@ -68,4 +70,4 @@ The script also loads keys from a `.env` file in the project directory or worksp
 node trade.js
 ```
 
-The script checks if the market is open, fetches historical prices, calculates SMAs, and places trades on crossover signals. State is persisted in `state.json` to avoid duplicate crossover signals.
+The script checks if the market is open, fetches historical prices, calculates SMAs, and aligns positions with the trend. State is persisted in `state.json` to track which symbols are currently held.
