@@ -55,21 +55,26 @@ const MAX_BUDGET = CONFIG.maxBudget;
 const ORDER_TYPE = CONFIG.orderType;
 const TIME_IN_FORCE = CONFIG.timeInForce;
 
-// Validate order type at startup
-if (!["market", "limit", "stop", "stop_limit"].includes(ORDER_TYPE)) {
+// Validate strategy parameters
+const validOrders = ["market", "limit", "stop", "stop_limit"];
+if (!validOrders.includes(ORDER_TYPE)) {
   console.error(`FATAL: Invalid orderType "${ORDER_TYPE}" in config.json`);
   process.exit(1);
 }
 if (["limit", "stop_limit"].includes(ORDER_TYPE) && CONFIG.limitPrice === undefined) {
-  console.error(
-    `FATAL: orderType="${ORDER_TYPE}" requires "limitPrice" in config.json`
-  );
+  console.error(`FATAL: orderType="${ORDER_TYPE}" requires "limitPrice" in config.json`);
   process.exit(1);
 }
 if (["stop", "stop_limit"].includes(ORDER_TYPE) && CONFIG.stopPrice === undefined) {
-  console.error(
-    `FATAL: orderType="${ORDER_TYPE}" requires "stopPrice" in config.json`
-  );
+  console.error(`FATAL: orderType="${ORDER_TYPE}" requires "stopPrice" in config.json`);
+  process.exit(1);
+}
+if (!Number.isFinite(SMA_SHORT) || !Number.isFinite(SMA_LONG) || SMA_SHORT < 1 || SMA_LONG < 1) {
+  console.error(`FATAL: smaShort and smaLong must be positive numbers`);
+  process.exit(1);
+}
+if (SMA_SHORT >= SMA_LONG) {
+  console.error(`FATAL: smaShort (${SMA_SHORT}) must be less than smaLong (${SMA_LONG})`);
   process.exit(1);
 }
 
@@ -160,7 +165,8 @@ async function fetchYahooBarsWithRetry(symbol, retries = 3) {
 
 function buildOrderParams(symbol, qty, side) {
   const params = { symbol, qty, side, type: ORDER_TYPE, time_in_force: TIME_IN_FORCE };
-  if (ORDER_TYPE !== "market") params.limit_price = CONFIG.limitPrice;
+  if (["limit", "stop_limit"].includes(ORDER_TYPE))
+    params.limit_price = CONFIG.limitPrice;
   if (["stop", "stop_limit"].includes(ORDER_TYPE))
     params.stop_price = CONFIG.stopPrice;
   return params;
@@ -243,31 +249,37 @@ async function main() {
       const trendLabel = bullish ? "BULL" : "BEAR";
 
       const existing = positions.find((p) => p.symbol === symbol);
-      const isHolding = !!existing;
+      const isHolding = !!existing || state[symbol].holding;
 
       log(
         `${symbol}: ${lastDate} | $${lastPrice.toFixed(2)} | ` +
         `SMA${SMA_SHORT}=${shortNow.toFixed(2)} SMA${SMA_LONG}=${longNow.toFixed(2)} ` +
         `(${spread >= 0 ? "+" : ""}${spread.toFixed(1)}%) ${trendLabel} | ` +
-        `Holding: ${isHolding ? existing.qty + " sh" : "none"}`
+        `Holding: ${existing ? existing.qty + " sh" : state[symbol].holding ? "pending" : "none"}`
       );
 
       // BUY: we're in a bullish trend but don't hold this symbol
       if (bullish && !isHolding) {
-        // Budget check
-        if (cashSpent + POSITION_SIZE > MAX_BUDGET) {
-          log(`${symbol}: Budget limit reached (spent $${cashSpent}/${MAX_BUDGET}), skipping`);
+        if (lastPrice > POSITION_SIZE) {
+          log(`${symbol}: Price $${lastPrice.toFixed(2)} exceeds position size $${POSITION_SIZE}, skipping`);
           continue;
         }
 
         const qty = Math.max(1, Math.floor(POSITION_SIZE / lastPrice));
+        const estCost = qty * lastPrice;
+
+        if (cashSpent + estCost > MAX_BUDGET) {
+          log(`${symbol}: Budget limit reached (spent $${cashSpent}/${MAX_BUDGET}), skipping`);
+          continue;
+        }
+
         try {
           const order = await alpaca.createOrder(buildOrderParams(symbol, qty, "buy"));
           log(`${symbol}: ✅ BUY ${qty} @ ~$${lastPrice.toFixed(2)} | ${order.id}`);
           state[symbol].holding = true;
           stateChanged = true;
           tradesExecuted++;
-          cashSpent += POSITION_SIZE;
+          cashSpent += estCost;
         } catch (e) {
           log(`${symbol}: ❌ BUY failed: ${e.message}`);
         }
@@ -275,9 +287,18 @@ async function main() {
 
       // SELL: we're in a bearish trend but still holding this symbol
       if (!bullish && isHolding) {
+        if (!existing) {
+          // State says we're holding but no position found — reset state
+          state[symbol].holding = false;
+          stateChanged = true;
+          log(`${symbol}: State had holding but no position found, resetting`);
+          continue;
+        }
         try {
-          await alpaca.closePosition(symbol);
-          log(`${symbol}: ✅ SOLD ${existing.qty} shares (closed position)`);
+          const order = await alpaca.createOrder(
+            buildOrderParams(symbol, Number(existing.qty), "sell")
+          );
+          log(`${symbol}: ✅ SOLD ${existing.qty} shares | ${order.id}`);
           state[symbol].holding = false;
           stateChanged = true;
           tradesExecuted++;

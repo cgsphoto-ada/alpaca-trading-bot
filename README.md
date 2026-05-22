@@ -13,6 +13,12 @@ Runs every 30 minutes during market hours (M-F, 9:30 AM – 4:00 PM ET) via cron
 
 ## Configuration
 
+Copy `config.example.json` to `config.json` and customize:
+
+```bash
+cp config.example.json config.json
+```
+
 Edit `config.json` to customize:
 
 ```json
