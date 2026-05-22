@@ -54,7 +54,7 @@ if (!["market", "limit", "stop", "stop_limit"].includes(ORDER_TYPE)) {
   console.error(`FATAL: Invalid orderType "${ORDER_TYPE}" in config.json`);
   process.exit(1);
 }
-if (ORDER_TYPE !== "market" && CONFIG.limitPrice === undefined) {
+if (["limit", "stop_limit"].includes(ORDER_TYPE) && CONFIG.limitPrice === undefined) {
   console.error(
     `FATAL: orderType="${ORDER_TYPE}" requires "limitPrice" in config.json`
   );
@@ -89,11 +89,10 @@ function sma(prices, period) {
 }
 
 async function loadEnv() {
-  // Check multiple paths: project .env, workspace-relative .env, fixed path
+  // Check project .env then workspace-relative .env
   const candidates = [
     path.join(__dirname, ".env"),
     path.join(__dirname, "..", "..", ".env"),
-    "/home/ada/.openclaw/.env",
   ];
   for (const f of candidates) {
     if (!fs.existsSync(f)) continue;
@@ -110,7 +109,7 @@ async function loadEnv() {
         (val.startsWith("'") && val.endsWith("'"))
       )
         val = val.slice(1, -1);
-      process.env[key] = val;
+      if (process.env[key] === undefined) process.env[key] = val;
     }
     log(`Loaded env from ${f}`);
     return;
