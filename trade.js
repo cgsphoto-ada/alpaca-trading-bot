@@ -21,8 +21,14 @@ const STATE_TMP = STATE_FILE + ".tmp";
 // ── Config (from config.json) ────────────────────────────
 function loadConfig() {
   const cfgPath = path.join(__dirname, "config.json");
-  const raw = fs.readFileSync(cfgPath, "utf-8");
-  const cfg = JSON.parse(raw);
+  let cfg;
+  try {
+    const raw = fs.readFileSync(cfgPath, "utf-8");
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`FATAL: Cannot read config.json: ${e.message}`);
+    process.exit(1);
+  }
   return {
     watchlist: cfg.watchlist || ["SPY", "QQQ", "IWM"],
     smaShort: cfg.smaShort || 50,
@@ -178,13 +184,18 @@ async function main() {
   try {
     account = await alpaca.getAccount();
     positions = await alpaca.getPositions();
-    log(`Account: $${Number(account.cash).toFixed(0)} cash | $${Number(account.portfolio_value).toFixed(0)} portfolio | ${account.buying_power} bp`);
+    log(`Account: $${Number(account.cash).toFixed(0)} cash | $${Number(account.portfolio_value).toFixed(0)} portfolio | ${Number(account.buying_power).toFixed(0)} bp`);
   } catch (e) {
     log(`ERROR account: ${e.message}`);
     return;
   }
 
   // 3. Process symbols
+  if (WATCHLIST.length === 0) {
+    log("WARN: Watchlist is empty — nothing to trade");
+    return;
+  }
+
   const state = loadState();
   let stateChanged = false;
 
@@ -224,7 +235,7 @@ async function main() {
         continue;
       }
 
-      // Golden cross: 50 crosses ABOVE 200
+      // Golden cross: short SMA crosses ABOVE long SMA
       if (shortPrev <= longPrev && shortNow > longNow) {
         if (state[symbol].crossover !== "golden") {
           log(`${symbol}: \x1b[33m🔼 GOLDEN CROSS\x1b[0m`);
@@ -255,7 +266,7 @@ async function main() {
         }
       }
 
-      // Death cross: 50 crosses BELOW 200
+      // Death cross: short SMA crosses BELOW long SMA
       if (shortPrev >= longPrev && shortNow < longNow) {
         if (state[symbol].crossover !== "death") {
           log(`${symbol}: \x1b[31m🔽 DEATH CROSS\x1b[0m`);
