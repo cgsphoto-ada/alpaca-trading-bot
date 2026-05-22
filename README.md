@@ -77,22 +77,3 @@ node trade.js
 ```
 
 The script checks if the market is open, fetches historical prices, calculates SMAs, and aligns positions with the trend. State is persisted in `state.json` to track which symbols are currently held.
-
-## CLI
-
-Quick account/position/order queries from the terminal:
-
-```bash
-node scripts/alpaca-cli.mjs <command> [args]
-```
-
-| Command | Description |
-|---------|-------------|
-| `account` | Balance, equity, daily P&L |
-| `positions` | Open positions with P&L |
-| `ticker <sym>` | Asset info |
-| `orders [n]` | Recent order history |
-| `buy <sym> <qty>` | Market buy order |
-| `sell <sym> <qty>` | Market sell order |
-| `close <sym>` | Close position |
-| `close-all` | Close all positions |
