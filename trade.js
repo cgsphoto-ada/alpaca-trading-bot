@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
  * Alpaca Paper Trading Bot — SMA Crossover Strategy
- * 
+ *
  * Uses Yahoo Finance for historical price data (free, unlimited history).
  * Uses Alpaca for account info, positions, and order execution (paper).
  * Runs on cron during market hours.
+ *
+ * Requires Node.js >= 18 (uses global fetch).
  */
 
 import Alpaca from "@alpacahq/alpaca-trade-api";
@@ -14,6 +16,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "state.json");
+const STATE_TMP = STATE_FILE + ".tmp";
 
 // ── Config (from config.json) ────────────────────────────
 function loadConfig() {
@@ -27,6 +30,8 @@ function loadConfig() {
     positionSize: cfg.positionSize || 5000,
     orderType: cfg.orderType || "market",
     timeInForce: cfg.timeInForce || "day",
+    limitPrice: cfg.limitPrice,
+    stopPrice: cfg.stopPrice,
   };
 }
 
@@ -34,8 +39,27 @@ const CONFIG = loadConfig();
 const WATCHLIST = CONFIG.watchlist;
 const SMA_SHORT = CONFIG.smaShort;
 const SMA_LONG = CONFIG.smaLong;
+const POSITION_SIZE = CONFIG.positionSize;
 const ORDER_TYPE = CONFIG.orderType;
 const TIME_IN_FORCE = CONFIG.timeInForce;
+
+// Validate order type at startup
+if (!["market", "limit", "stop", "stop_limit"].includes(ORDER_TYPE)) {
+  console.error(`FATAL: Invalid orderType "${ORDER_TYPE}" in config.json`);
+  process.exit(1);
+}
+if (ORDER_TYPE !== "market" && CONFIG.limitPrice === undefined) {
+  console.error(
+    `FATAL: orderType="${ORDER_TYPE}" requires "limitPrice" in config.json`
+  );
+  process.exit(1);
+}
+if (["stop", "stop_limit"].includes(ORDER_TYPE) && CONFIG.stopPrice === undefined) {
+  console.error(
+    `FATAL: orderType="${ORDER_TYPE}" requires "stopPrice" in config.json`
+  );
+  process.exit(1);
+}
 
 // ── Helpers ───────────────────────────────────────────────
 function log(msg) {
@@ -48,7 +72,8 @@ function loadState() {
 }
 
 function saveState(s) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  fs.writeFileSync(STATE_TMP, JSON.stringify(s, null, 2));
+  fs.renameSync(STATE_TMP, STATE_FILE);
 }
 
 function sma(prices, period) {
@@ -58,7 +83,12 @@ function sma(prices, period) {
 }
 
 async function loadEnv() {
-  const candidates = ["/home/ada/.openclaw/.env"];
+  // Check multiple paths: project .env, workspace-relative .env, fixed path
+  const candidates = [
+    path.join(__dirname, ".env"),
+    path.join(__dirname, "..", "..", ".env"),
+    "/home/ada/.openclaw/.env",
+  ];
   for (const f of candidates) {
     if (!fs.existsSync(f)) continue;
     const txt = fs.readFileSync(f, "utf-8");
@@ -69,8 +99,10 @@ async function loadEnv() {
       if (eq === -1) continue;
       const key = t.slice(0, eq);
       let val = t.slice(eq + 1);
-      if ((val.startsWith('"') && val.endsWith('"')) ||
-          (val.startsWith("'") && val.endsWith("'")))
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      )
         val = val.slice(1, -1);
       process.env[key] = val;
     }
@@ -82,16 +114,20 @@ async function loadEnv() {
 
 // ── Yahoo Finance data (free, no API key) ─────────────────
 async function fetchYahooBars(symbol) {
-  // Fetch 1 year of daily data for SMA200 + buffer
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1y&interval=1d`;
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?range=1y&interval=1d`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
   const json = await res.json();
   const result = json.chart?.result?.[0];
-  if (!result?.timestamp) throw new Error("No data from Yahoo");
-  
-  const closes = result.indicators.quote[0].close;
+  if (!result?.timestamp) throw new Error(`No timestamp in Yahoo response for ${symbol}`);
+
+  const quote = result.indicators?.quote?.[0];
+  if (!quote?.close) throw new Error(`No close data in Yahoo response for ${symbol}`);
+  const closes = quote.close;
   const timestamps = result.timestamp;
+
   // Pair timestamps with closes, filter out nulls
   const bars = [];
   for (let i = 0; i < timestamps.length; i++) {
@@ -184,7 +220,7 @@ async function main() {
       if (state[symbol].crossover === "none") {
         state[symbol].crossover = shortNow > longNow ? "golden" : "death";
         stateChanged = true;
-        log(`${symbol}: Initial state set to "${state[symbol].crossover}" (SMA50 ${shortNow > longNow ? ">" : "<"} SMA200)`);
+        log(`${symbol}: Init state → "${state[symbol].crossover}" (SMA${SMA_SHORT} ${shortNow > longNow ? ">" : "<"} SMA${SMA_LONG})`);
         continue;
       }
 
@@ -198,7 +234,17 @@ async function main() {
           } else {
             const qty = Math.max(1, Math.floor(POSITION_SIZE / lastPrice));
             try {
-              const order = await alpaca.createOrder({ symbol, qty, side: "buy", type: ORDER_TYPE, time_in_force: TIME_IN_FORCE });
+              const orderParams = {
+                symbol,
+                qty,
+                side: "buy",
+                type: ORDER_TYPE,
+                time_in_force: TIME_IN_FORCE,
+              };
+              if (ORDER_TYPE !== "market") orderParams.limit_price = CONFIG.limitPrice;
+              if (["stop", "stop_limit"].includes(ORDER_TYPE))
+                orderParams.stop_price = CONFIG.stopPrice;
+              const order = await alpaca.createOrder(orderParams);
               log(`${symbol}: ✅ BUY ${qty} @ ~$${lastPrice.toFixed(2)} | ${order.id}`);
             } catch (e) {
               log(`${symbol}: ❌ BUY failed: ${e.message}`);
