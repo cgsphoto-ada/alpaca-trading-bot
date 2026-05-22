@@ -57,8 +57,13 @@ const TIME_IN_FORCE = CONFIG.timeInForce;
 
 // Validate strategy parameters
 const validOrders = ["market", "limit", "stop", "stop_limit"];
+const validTIF = ["day", "gtc", "opg", "cls", "ioc", "fok"];
 if (!validOrders.includes(ORDER_TYPE)) {
   console.error(`FATAL: Invalid orderType "${ORDER_TYPE}" in config.json`);
+  process.exit(1);
+}
+if (!validTIF.includes(TIME_IN_FORCE)) {
+  console.error(`FATAL: Invalid timeInForce "${TIME_IN_FORCE}". Must be one of: ${validTIF.join(", ")}`);
   process.exit(1);
 }
 if (["limit", "stop_limit"].includes(ORDER_TYPE) && CONFIG.limitPrice === undefined) {
@@ -76,6 +81,24 @@ if (!Number.isFinite(SMA_SHORT) || !Number.isFinite(SMA_LONG) || SMA_SHORT < 1 |
 if (SMA_SHORT >= SMA_LONG) {
   console.error(`FATAL: smaShort (${SMA_SHORT}) must be less than smaLong (${SMA_LONG})`);
   process.exit(1);
+}
+if (!Number.isFinite(POSITION_SIZE) || POSITION_SIZE <= 0) {
+  console.error(`FATAL: positionSize must be a positive number, got "${CONFIG.positionSize}"`);
+  process.exit(1);
+}
+if (!Number.isFinite(MAX_BUDGET) || MAX_BUDGET <= 0) {
+  console.error(`FATAL: maxBudget must be a positive number, got "${CONFIG.maxBudget}"`);
+  process.exit(1);
+}
+if (!Array.isArray(WATCHLIST) || WATCHLIST.length === 0) {
+  console.error(`FATAL: watchlist must be a non-empty array`);
+  process.exit(1);
+}
+for (const sym of WATCHLIST) {
+  if (typeof sym !== "string" || sym.trim() === "") {
+    console.error(`FATAL: watchlist contains invalid symbol: "${sym}"`);
+    process.exit(1);
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -249,6 +272,15 @@ async function main() {
       const trendLabel = bullish ? "BULL" : "BEAR";
 
       const existing = positions.find((p) => p.symbol === symbol);
+
+      // Reconcile orphan state: if state says we're holding but Alpaca
+      // reports no position, clear the holding flag so buys aren't blocked
+      if (state[symbol].holding && !existing) {
+        state[symbol].holding = false;
+        stateChanged = true;
+        log(`${symbol}: State had holding but no position found, resetting`);
+      }
+
       const isHolding = !!existing || state[symbol].holding;
 
       log(
@@ -287,13 +319,6 @@ async function main() {
 
       // SELL: we're in a bearish trend but still holding this symbol
       if (!bullish && isHolding) {
-        if (!existing) {
-          // State says we're holding but no position found — reset state
-          state[symbol].holding = false;
-          stateChanged = true;
-          log(`${symbol}: State had holding but no position found, resetting`);
-          continue;
-        }
         try {
           const order = await alpaca.createOrder(
             buildOrderParams(symbol, Number(existing.qty), "sell")
