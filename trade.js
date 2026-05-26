@@ -34,15 +34,15 @@ function loadConfig() {
     process.exit(1);
   }
   return {
-    watchlist: cfg.watchlist || ["SPY", "QQQ", "IWM"],
-    smaShort: cfg.smaShort || 20,
-    smaLong: cfg.smaLong || 50,
-    positionSize: cfg.positionSize || 5000,
-    maxBudget: cfg.maxBudget || 80000,
-    orderType: cfg.orderType || "market",
-    timeInForce: cfg.timeInForce || "day",
-    limitPrice: cfg.limitPrice,
-    stopPrice: cfg.stopPrice,
+    watchlist: cfg.watchlist ?? ["SPY", "QQQ", "IWM"],
+    smaShort: cfg.smaShort ?? 20,
+    smaLong: cfg.smaLong ?? 50,
+    positionSize: cfg.positionSize ?? 5000,
+    maxBudget: cfg.maxBudget ?? 80000,
+    orderType: cfg.orderType ?? "market",
+    timeInForce: cfg.timeInForce ?? "day",
+    limitPrice: cfg.limitPrice ?? undefined,
+    stopPrice: cfg.stopPrice ?? undefined,
   };
 }
 

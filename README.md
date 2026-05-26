@@ -40,7 +40,7 @@ Edit `config.json` to customize:
 | `maxBudget` | Maximum total dollars to allocate per run |
 | `smaShort` / `smaLong` | Moving average periods |
 | `orderType` | `market`, `limit`, `stop`, or `stop_limit` |
-| `timeInForce` | `day`, `gtc`, or `ioc` |
+| `timeInForce` | `day`, `gtc`, `opg`, `cls`, `ioc`, or `fok` |
 | `limitPrice` | Required when `orderType` is `limit` or `stop_limit` |
 | `stopPrice` | Required when `orderType` is `stop` or `stop_limit` |
 
